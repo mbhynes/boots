@@ -1,0 +1,5 @@
+pytest
+scipy
+numpy
+tensorflow>=2
+kormos
