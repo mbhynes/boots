@@ -79,6 +79,10 @@ class TensorArrayConverter:
     parts = tf.dynamic_partition(x, self.part, self.n_tensors)
     return [tf.reshape(part, self.shapes[k]) for (k, part) in enumerate(parts)]
 
+  def _flatten_tensors(self, weights):
+    assert self._built
+    return tf.cast(tf.dynamic_stitch(self.idx, weights), dtype=self.dtype)
+
   def _tensors_to_numpy(self, weights):
     """
     Convert a list of tensors to a (vector) `numpy.ndarray` of parameters.
@@ -90,7 +94,7 @@ class TensorArrayConverter:
       numpy.ndarray: vector of parameters used by `scipy.optimize.minimize`
     """
     assert self._built
-    return tf.cast(tf.dynamic_stitch(self.idx, weights), dtype=self.dtype).numpy()
+    return self._flatten_tensors(weights).numpy()
 
   def get_weights(self, model):
     """
@@ -124,12 +128,10 @@ class TensorArrayConverter:
 
 class BootstrapOptimizedModel(keras.Model):
 
-  # tf.compat.v1.enable_eager_execution()
-  # tf.config.run_functions_eagerly(True)
-
   def __init__(self, **kwargs):
     super().__init__(**kwargs)
     self._tensor_converter = TensorArrayConverter()
+    self._history = []
 
   def compile(self, **kwargs):
     """
@@ -196,30 +198,52 @@ class BootstrapOptimizedModel(keras.Model):
       # If this model is being re-compiled, reset the fit method to the parent
       self.train_step = super().train_step
 
-  @tf.function
-  def _fg(self, data):
+  # @tf.function
+  def _fg(self, x, y, sample_weight):
     model = self
-    data = data_adapter.expand_1d(data)
-    x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
+    # data = data_adapter.expand_1d(data)
+    # x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
+    # print("x=", x)
+    # print("y=", y)
     with tf.GradientTape() as tape:
+      # weights = tf.concat([tf.reshape(w, [-1]) for w in self.trainable_weights], axis=-1)
       y_pred = model(x, training=True)
+      # print("y_pred=", y_pred)
       losses = model.compiled_loss(y, y_pred, sample_weight=sample_weight)
 
       if len(self.losses):
         reg_loss = losses_utils.cast_losses_to_common_dtype(self.losses)
-        reg_loss_vec = math_ops.add_n(reg_loss) * tf.ones(shape=losses.shape, dtype=y_pred.dtype)
+        reg_loss_vec = math_ops.add_n(reg_loss) * tf.ones(shape=losses.shape, dtype=losses.dtype)
         losses += reg_loss_vec
-    weights = model.trainable_variables
-    jac = tape.jacobian(losses, weights)
-    return losses, jac[0]
+    # weights = self._tensor_converter._flatten_tensors(self.trainable_weights)
+    # print("weights=", weights)
+    jac = tape.jacobian(losses, self.trainable_weights)
+    # return losses, jac[0]
+    # print("jac=", jac[0])
+    flat_jac = tf.concat([tf.reshape(j, (x.shape[0], -1)) for j in jac], axis=-1)
+    # print("flat_jac=", flat_jac)
+    # jac = tape.jacobian(losses, weights)
+    # print("jac=", jac)
+    return losses, flat_jac
 
   def bootstrap_train_step(self, data):
 
+    nfev = 0
+    data = data_adapter.expand_1d(data)
+    x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
+
     @OptimizationStateCache.cached(key='fg')
-    def _wrapped_fg(_, x):
-      self._tensor_converter.set_weights(x, model=self)
-      f, g = self._fg(data)
-      return f.numpy(), np.squeeze(g.numpy(), axis=-1)
+    def _wrapped_fg(_, weights):
+      nonlocal nfev
+      nfev += 1
+      self._tensor_converter.set_weights(weights, model=self)
+      f, g = self._fg(x, y, sample_weight)
+      # g = self._tensor_converter._tensors_to_numpy(g)
+      # if g.shape[-1] == 1:
+      #   g = np.squeeze(g.numpy(), axis=-1)
+      # else:
+      #   g = g.numpy()
+      return f.numpy(), g.numpy()
 
     x0 = self._tensor_converter.get_weights(self)
     self._bootstrap_fn.func_and_grad = MethodType(_wrapped_fg, self._bootstrap_fn) 
@@ -230,14 +254,12 @@ class BootstrapOptimizedModel(keras.Model):
     else:
       self.stop_training = True
 
-    data = data_adapter.expand_1d(data)
-    x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
+    # Add function evals to the optimizer's history metrics
+    # TODO: burn this, it's ugly and hacky
+    self.optimizer.history[-1].update({'nfev': nfev})
 
     # Collect metrics to return
-    return_metrics = {
-      'nfev': len(self._bootstrap_fn.cache.entries),
-      'stepsize': self.optimizer.history[-1].get('stepsize'),
-    }
+    return_metrics = {}
     self.compiled_metrics.update_state(y, self(x, training=False), sample_weight)
     for metric in self.metrics:
       result = metric.result()
@@ -246,3 +268,6 @@ class BootstrapOptimizedModel(keras.Model):
       else:
         return_metrics[metric.name] = result
     return return_metrics
+
+class BootstrapOptimizedSequentialModel(keras.models.Sequential, BootstrapOptimizedModel):
+    pass

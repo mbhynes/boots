@@ -57,8 +57,9 @@ class BootstrappedDifferentiableFunction:
       num_bootstraps=2**10,
       subtract_bias=True,
       precompute=True,
-      shuffle_on_precompute=True,
+      shuffle_on_precompute=False,
       max_samples=2**10,
+      max_cache_entries=2**2,
       seed=None,
   ): 
     self.num_bootstraps = num_bootstraps
@@ -66,6 +67,7 @@ class BootstrappedDifferentiableFunction:
     self.precompute = precompute
     self.shuffle_on_precompute = shuffle_on_precompute
     self.max_samples = max_samples
+    self.seed = seed
     self.rng = default_rng(seed=seed)
     if self.precompute:
       if max_samples is None:
@@ -75,7 +77,7 @@ class BootstrappedDifferentiableFunction:
       )
     else:
       self.bootstrap_sample_weights = None
-    self.cache = OptimizationStateCache(max_entries=32)
+    self.cache = OptimizationStateCache(max_entries=max_cache_entries)
 
   def func_and_grad(self, x):
     raise NotImplementedError
@@ -87,15 +89,24 @@ class BootstrappedDifferentiableFunction:
     return self.func_and_grad(x)[1]
 
   def sample(self, num_samples):
-    m = np.minimum(self.num_bootstraps, num_samples)
+    # Do not create more bootstrap samples than actual samples
+    b = np.minimum(self.num_bootstraps, num_samples)
     if self.precompute: 
       assert self.bootstrap_sample_weights is not None
-      assert num_samples <= self.max_samples
-
+      if num_samples > self.max_samples:
+        logger.warning(
+          f"Bootstrap fn requested {num_samples} samples, but precomputed sampling matrix "
+          f"is shape {self.bootstrap_sample_weights.shape}. Recomputing matrix."
+        )
+        S = self._build_sampling_matrix(num_samples, num_samples, rng=self.rng)
+        self.num_bootstraps = num_samples
+        self.max_samples = num_samples
+        self.bootstrap_sample_weights = S
+        return S
       if self.shuffle_on_precompute:
         self.rng.shuffle(self.bootstrap_sample_weights, axis=1)
-      return self.bootstrap_sample_weights[:m, :num_samples]
-    return self._build_sampling_matrix(m, num_samples)
+      return self.bootstrap_sample_weights[:b, :num_samples]
+    return self._build_sampling_matrix(b, num_samples)
 
 
   def _bootstrap(self, x, fn):
@@ -113,12 +124,17 @@ class BootstrappedDifferentiableFunction:
       v_mean_bs = np.mean(v_weighted, axis=0)
       bias = (v_mean_bs - v_mean)
       v_mean -= bias
+      # Subtracting the bias increases the uncertainty in the value
+      # The factor of 2 is from the addition of variances in quadrature
+      # v_std_bs *= np.sqrt(2)
     return (v_mean, v_std_bs, b)
 
-  def bootstrap_func(self, x, **kwargs):
+  @OptimizationStateCache.cached(key='bootstrapped_f')
+  def bootstrap_func(self, x):
     return self._bootstrap(x, self.func)
 
-  def bootstrap_grad(self, x, **kwargs):
+  @OptimizationStateCache.cached(key='bootstrapped_g')
+  def bootstrap_grad(self, x):
     return self._bootstrap(x, self.grad)
 
   @staticmethod
@@ -161,10 +177,16 @@ class BootstrappedWolfeLineSearch:
   def __init__(self, linesearch_config=None, significance_level=0.05):
     self.significance_level = significance_level
     self.linesearch_config = {**self.DEFAULT_LINESEARCH_CONFIG, **(linesearch_config or {})}
+    self.cache = OptimizationStateCache(max_entries=2**3)
 
   def minimize(self, fn, p, x0):
 
     c1, c2 = self.linesearch_config['c1'], self.linesearch_config['c2']
+    bsfunc = fn.bootstrap_func
+    bsgrad = fn.bootstrap_grad
+
+    def bsgrad(x):
+      return fn.bootstrap_grad(x)
 
     def _directional_product(x, dx):
       pTx = np.dot(p, x)
@@ -174,21 +196,23 @@ class BootstrappedWolfeLineSearch:
 
     iter_num = 0
     candidate_num = 0
-    f0, df0, n0 = fn.bootstrap_func(x0)
-    g0, dg0, _  = fn.bootstrap_grad(x0)
+    f0, df0, n0 = bsfunc(x0)
+    g0, dg0, _  = bsgrad(x0)
     pTg0, dpTg0 = _directional_product(g0, dg0)
 
-    if np.dot(p, g0) > 0.0:
-      logger.error("Provided direction is non-descent direction: pTg = {np.dot(p, g0)}")
-      return None
+    if pTg0 > 0.0:
+      logger.error("Provided direction is non-descent direction: pTg = {np.dot(p, g0)}; reversing search.")
+      p = -p
+      pTg0 = -pTg0
 
     def _sufficient_decrease_ttest(alpha, x, f, g, significance_level=0.05):
       nonlocal iter_num
       del f, g
       f_wolfe_max = f0 + c1 * alpha * pTg0
+      assert f_wolfe_max <= f0, f"f_wolfe_max={f_wolfe_max} > f0={f0}"
       df_wolfe_max = np.sqrt(df0 ** 2 + (c1 * alpha * dpTg0)**2)
 
-      f, df, n = fn.bootstrap_func(x)
+      f, df, n = bsfunc(x)
       statistic, pvalue = scipy.stats.ttest_ind_from_stats(
         mean1=f_wolfe_max,
         std1=df_wolfe_max,
@@ -204,7 +228,8 @@ class BootstrappedWolfeLineSearch:
       logger.debug(
         f"Iter {iter_num}: (Decrease) {msg} step={alpha:2.2f} at sig={pvalue:2.2g}: "
         f"f=({f:2.4g} +/- {df:2.4g}) vs "
-        f"f_max=({f_wolfe_max:2.4g} +/- {df_wolfe_max:2.4g})"
+        f"f_max=({f_wolfe_max:2.4g} +/- {df_wolfe_max:2.4g}) "
+        f"f0=({f0:2.4g} +/- {df0:2.4g}) with slope: pTg0={pTg0}"
       )
       return result
 
@@ -214,7 +239,7 @@ class BootstrappedWolfeLineSearch:
       pTg_wolfe_max = np.abs(c2 * pTg0)
       dpTg_wolfe_max = np.abs(c2 * dpTg0)
 
-      g, dg, n = fn.bootstrap_grad(x)
+      g, dg, n = bsgrad(x)
       pTg, dpTg = _directional_product(g, dg)
       statistic, pvalue = scipy.stats.ttest_ind_from_stats(
         mean1=pTg_wolfe_max,
@@ -262,9 +287,9 @@ class BootstrappedWolfeLineSearch:
     def f(x):
       nonlocal iter_num
       iter_num += 1
-      return fn.bootstrap_func(x)[0] 
+      return bsfunc(x)[0] 
 
-    g = lambda x: fn.bootstrap_grad(x)[0]
+    g = lambda x: bsgrad(x)[0]
 
     (alpha, nfev, njev, new_fval, old_fval, new_slope) = scipy.optimize.line_search(
       f=f,
@@ -281,26 +306,39 @@ class BootstrappedWolfeLineSearch:
       success=success,
       status=status,
       msg=msg,
-      fun=fn.bootstrap_func(x)[0],
-      jac=fn.bootstrap_grad(x)[0],
-      nfev=nfev,
-      njev=njev,
+      fun=bsfunc(x) if success else (f0, df0, n0),
+      jac=bsgrad(x) if success else (g0, dg0, n0),
+      nfev=iter_num,
+      njev=iter_num,
       nit=iter_num,
       maxcv=0.0,
     )
     return result
 
 
+class OptimizerExitStatus(enum.IntEnum):
+  RUNNING = 0
+  EXITED_CONVERGENCE = 1
+  EXITED_NO_CONVERGENCE = 2
+
+  def message(self):
+    return {
+      self.RUNNING: "Iteration terminated successfully.",
+      self.EXITED_CONVERGENCE: "Iteration terminated due to convergence criteria being met.",
+      self.EXITED_NO_CONVERGENCE: "Iteration terminated abonormally without convergence.",
+    }.get(self.value)
+
+
 class BootstrappedFirstOrderOptimizer:
 
   history_ls_result_keys = [
-    'success', 'status',
+    'fun', 'success', 'status',
   ] 
   history_keys = [
-    'f', 'df', 'g_norm', 'is_steepest_descent', 'stepsize',
+    'g_norm', 'is_steepest_descent', 'stepsize',
   ]
   
-  def __init__(self, linesearch=None, convergence_window=2**3, convergence_frac=0.75):
+  def __init__(self, linesearch=None, convergence_window=1, convergence_frac=1.0):
     self.linesearch = linesearch or BootstrappedWolfeLineSearch()
     self.convergence_window = convergence_window
     self.convergence_frac = convergence_frac
@@ -322,12 +360,10 @@ class BootstrappedFirstOrderOptimizer:
     w = min(len(self.history), self.convergence_window)
     if w == 0:
       return False
-    n = 0
     n_failed = 0
     for e in self.history[-self.convergence_window:]:
-      n += 1
       n_failed += int(not e['success'])
-    return (1.0 * n_failed / n) >= self.convergence_frac
+    return (1.0 * n_failed / w) >= self.convergence_frac
     
   def compute_search_direction(self, x, f, g):
     raise NotImplementedError
@@ -341,6 +377,19 @@ class BootstrappedFirstOrderOptimizer:
   def on_iterate_end(self, **context):
     pass
 
+  def is_sample_within_previous_estimate(self, f, df, index=-1):
+    if len(self.history) == 0:
+      return True
+    previous = self.history[index]['fun']
+    v1 = (previous[0] - previous[1], previous[0] + previous[1])
+    v2 = (f - df, f + df)
+    has_overlap = (
+      (v2[0] <= v1[1]) and (v2[1] >= v1[0])
+      or
+      (v1[0] <= v2[1]) and (v1[1] >= v2[0])
+    )
+    return has_overlap
+
   def iterate(self, bootstrap_fn, x):
     """
     Perform the mathematical logic for a single iteration
@@ -348,16 +397,33 @@ class BootstrappedFirstOrderOptimizer:
     context = {'bootstrap_fn': bootstrap_fn, 'x': x}
     self.on_iterate_begin(**context)
 
+    # if len(bootstrap_fn.cache.entries):
+      # logger.debug("last entry: ")
+      # logger.debug(bootstrap_fn.cache.entries[-1])
+      # logger.debug("cache: ")
+      # logger.debug(bootstrap_fn.cache.state_dict)
+    logger.debug(f"Calling bootstrap func with x={x}")
     f, df, nf = bootstrap_fn.bootstrap_func(x)
     g, dg, ng = bootstrap_fn.bootstrap_grad(x)
-    p, is_steepest_descent = self.compute_search_direction(x, f, g)
 
+    diff_test = self.is_sample_within_previous_estimate(f, df)
+    if not diff_test:
+      logger.warning(
+        f"Sampled f={f:2.4g}+/-{df:2.4g} is different from sample in previous batch. "
+        f"Previous: {self.history[-1]['fun'][0]:2.4g} +/- {self.history[-1]['fun'][1]:2.4g} "
+        "Iteration has sampling error limits. Please increase the (bootstrap) batch_size."
+      )
+    # logger.debug(f"Latest cache entry: {bootstrap_fn.cache.entries[-1]}")
+    p, is_steepest_descent = self.compute_search_direction(x, f, g)
     ls_result = self.linesearch.minimize(bootstrap_fn, p=p, x0=x)
     context.update({
       'f': f,
-      'df': df / np.sqrt(nf),
+      'df': df,
+      'nf': nf,
       'g': g,
-      'g_norm': np.linalg.norm(g),
+      'dg': dg,
+      'ng': ng,
+      'g_norm': np.linalg.norm(ls_result.jac[0]),
       'p': p,
       'ls_result': ls_result,
       'is_steepest_descent': is_steepest_descent,
@@ -380,8 +446,10 @@ class BootstrappedFirstOrderOptimizer:
   def minimize(self, bootstrap_fn, x0, maxiters=20):
     k = 0
     x = x0
-    while not self.is_converged() and (k < maxiters):
+    is_converged = self.is_converged() 
+    while not is_converged and (k < maxiters):
       result = self.iterate(bootstrap_fn, x)
+      is_converged = self.is_converged() 
       x = result.x
       k += 1
     return result
@@ -438,7 +506,7 @@ class LbfgsOptimizer(BootstrappedFirstOrderOptimizer):
       return
 
     sk = ls_result.x - context['x']
-    yk = ls_result.jac - context['g']
+    yk = ls_result.jac[0] - context['g']
     self.s.append(sk)
     self.y.append(yk)
 
