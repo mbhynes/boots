@@ -52,16 +52,14 @@ def load_data():
   y_test = keras.utils.to_categorical(y_test, num_classes)
   return (x_train, y_train), (x_test, y_test)
 
-def run_tests(training_data, validation_data, num_trials=1, boostrap_args=None, ls_args=None, fit_args=None):
-  batch_size = fit_args.pop("batch_size", 32)
+def run_tests(training_data, validation_data, num_trials=1, bootstrap_args=None, ls_args=None, fit_args=None):
+  fit_args = copy.deepcopy(fit_args or {})
+  fn_args = copy.deepcopy(bootstrap_args or {})
 
   # Update the batch size if provided
-  fn_args = copy.deepcopy(boostrap_args) or {}
   fn_args.update({
-    # We only need to have batch_size samples pre-computed
-    "max_samples": batch_size,
     # If the data is shuffled at each epoch, don't need to shuffle the bootstrap sample weight matrix
-    "shuffle_on_precompute": not fit_args.get("shuffle", False),
+    "shuffle_on_precompute": False, #not fit_args.get("shuffle", False),
   })
 
   bootstrap_fn = BootstrappedDifferentiableFunction(**fn_args)
@@ -72,37 +70,48 @@ def run_tests(training_data, validation_data, num_trials=1, boostrap_args=None, 
     #   "optimizer": "adam",
     # },
     # "rmsprop": {
-    #   "loss": keras.losses.CategoricalCrossentropy(),
-    #   "optimizer": "rmsprop",
+    #   "compile_args": {
+    #     "loss": keras.losses.CategoricalCrossentropy(),
+    #     "optimizer": "rmsprop",
+    #   },
+    #   "fit_args": {},
     # },
     # "boot-sgd": {
-    #   "loss": keras.losses.CategoricalCrossentropy(reduction="none"),
-    #   "optimizer": GradientDescentOptimizer(linesearch=linesearch),
-    #   "bootstrap_fn": bootstrap_fn,
+    #   "compile_args": {
+    #     "loss": keras.losses.CategoricalCrossentropy(reduction="none"),
+    #     "optimizer": GradientDescentOptimizer(linesearch=linesearch, convergence_window=8),
+    #     "bootstrap_fn": bootstrap_fn,
+    #   },
+    #   "fit_args": {'batch_size': 2**5},
     # },
     "boot-lbfgs": {
-      "loss": keras.losses.CategoricalCrossentropy(reduction="none"),
-      "optimizer": LbfgsOptimizer(linesearch=linesearch),
-      "bootstrap_fn": bootstrap_fn,
+      "compile_args": {
+        "loss": keras.losses.CategoricalCrossentropy(reduction="none"),
+        "optimizer": GradientDescentOptimizer(linesearch=linesearch, convergence_window=8),
+        "bootstrap_fn": bootstrap_fn,
+      },
+      "fit_args": {'batch_size': 4},
     }
   }
+  models = {key: [] for key in configs.keys()}
   history = {key: [] for key in configs.keys()}
 
   for (name, config) in configs.items():
     for k in range(num_trials):
       model = build_model()
-      model.compile(**config)
+      model.compile(**config['compile_args'])
       hist = model.fit(
         x=training_data[0],
         y=training_data[1],
         validation_data=validation_data,
-        **fit_args,
+        **{**fit_args, **config.get('fit_args', {})},
       )
       if issubclass(type(config.get('optimizer')), BootstrappedFirstOrderOptimizer):
         history[name].append((hist, model.optimizer.history))
       else:
         history[name].append((hist, []))
-  return history
+      models[name].append(model)
+  return models, history
 
 def main(args):
   training_data, validation_data = load_data()

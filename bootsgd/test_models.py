@@ -51,18 +51,19 @@ class TestBootstrapOptimizedModel:
     LbfgsOptimizer(),
   ])
   def test_fit(self, optimizer):
-    rank = 2
+    rank = 5
     model = self._build_ols_model(rank=rank)
     loss = keras.losses.MeanSquaredError(reduction=keras.losses.Reduction.NONE)
     model.compile(loss=loss, optimizer=optimizer)
-    num_samples=2**6
+    num_samples=2**10
     np.random.seed(1)
     tf.random.set_seed(1)
     w = 1.0 + np.arange(rank)
     noise_level = 1
     X = np.random.normal(size=(num_samples, rank))
     y = np.expand_dims(X.dot(w) + noise_level * np.random.normal(size=num_samples), -1)
-    model.fit(x=X, y=y, epochs=1, batch_size=2**4, shuffle=True)
+    model.fit(x=X, y=y, epochs=2, batch_size=2**8, shuffle=True)
     w_fit = model._tensor_converter.get_weights(model)
-    assert np.allclose(w, w_fit, atol=0.1)
- 
+    w_ls, _, _, _ = np.linalg.lstsq(X, y)
+    atol = np.sqrt(np.linalg.norm(w_ls - w))
+    assert np.allclose(w, w_fit, atol=atol)

@@ -151,6 +151,7 @@ class BootstrapOptimizedModel(keras.Model):
       optimizer: A `keras.optimizer.Optimizer` or string identifier, or a `kormos.optimizer.BatchOptimizer` or string identifier
       **kwargs: all other `kwargs` as passed to `keras.Model.compile <https://keras.io/api/models/model_training_apis/#compile-method>`_
     """
+    jacobian_batch_size = kwargs.pop("jacobian_batch_size", 2**5)
     orig_run_eagerly = kwargs.pop("run_eagerly", None)
     orig_optimizer = kwargs.pop("optimizer", "rmsprop")
     bootstrap_fn = kwargs.pop("bootstrap_fn", BootstrappedDifferentiableFunction()) 
@@ -192,44 +193,48 @@ class BootstrapOptimizedModel(keras.Model):
 
       self.train_step = self.bootstrap_train_step
       self.optimizer = optimizer
+      self._jacobian_batch_size = jacobian_batch_size
       self._bootstrap_fn = bootstrap_fn
       self._tensor_converter.build(self)
     else:
       # If this model is being re-compiled, reset the fit method to the parent
       self.train_step = super().train_step
 
-  # @tf.function
-  def _fg(self, x, y, sample_weight):
+  @tf.function
+  def _fg(self, X, Y):
     model = self
-    # data = data_adapter.expand_1d(data)
-    # x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
-    # print("x=", x)
-    # print("y=", y)
-    with tf.GradientTape() as tape:
-      # weights = tf.concat([tf.reshape(w, [-1]) for w in self.trainable_weights], axis=-1)
-      y_pred = model(x, training=True)
-      # print("y_pred=", y_pred)
-      losses = model.compiled_loss(y, y_pred, sample_weight=sample_weight)
+    batch_size = self._jacobian_batch_size
+    # Chunk up the dataset into smaller subbatches since tape.jacobian blows up
+    data = (
+      tf.data.Dataset.from_tensor_slices(tensors=(X, Y))
+      .batch(batch_size, drop_remainder=True)
+    )
+    # Initialize TensorArray buffers to iteratively append the loss/jacobians
+    losses_array = tf.TensorArray(dtype=keras.backend.floatx(), size=len(X) // batch_size)
+    jac_array = tf.TensorArray(dtype=keras.backend.floatx(), size=len(X) // batch_size)
 
-      if len(self.losses):
-        reg_loss = losses_utils.cast_losses_to_common_dtype(self.losses)
-        reg_loss_vec = math_ops.add_n(reg_loss) * tf.ones(shape=losses.shape, dtype=losses.dtype)
-        losses += reg_loss_vec
-    # weights = self._tensor_converter._flatten_tensors(self.trainable_weights)
-    # print("weights=", weights)
-    jac = tape.jacobian(losses, self.trainable_weights)
-    # return losses, jac[0]
-    # print("jac=", jac[0])
-    flat_jac = tf.concat([tf.reshape(j, (x.shape[0], -1)) for j in jac], axis=-1)
-    # print("flat_jac=", flat_jac)
-    # jac = tape.jacobian(losses, weights)
-    # print("jac=", jac)
-    return losses, flat_jac
+    for (k, record) in data.enumerate():
+      x, y, _ = data_adapter.unpack_x_y_sample_weight(record)
+
+      with tf.GradientTape() as tape:
+        y_pred = model(x, training=True)
+        losses = model.compiled_loss(y, y_pred)
+
+        if len(model.losses):
+          reg_loss = math_ops.add_n(losses_utils.cast_losses_to_common_dtype(model.losses))
+          losses += tf.cast(reg_loss, dtype=losses.dtype)
+
+      jac = tape.jacobian(losses, model.trainable_weights)
+      flat_jac = tf.concat([tf.reshape(j, (x.shape[0], -1)) for j in jac], axis=-1)
+
+      # Write the loss and jacobian arrays for this chunk to the buffer
+      losses_array = losses_array.write(tf.cast(k, dtype=tf.int32), tf.transpose(losses))
+      jac_array = jac_array.write(tf.cast(k, dtype=tf.int32), tf.squeeze(flat_jac))
+
+    return losses_array.concat(), jac_array.concat()
 
   def bootstrap_train_step(self, data):
-
     nfev = 0
-    data = data_adapter.expand_1d(data)
     x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
 
     @OptimizationStateCache.cached(key='fg')
@@ -237,12 +242,7 @@ class BootstrapOptimizedModel(keras.Model):
       nonlocal nfev
       nfev += 1
       self._tensor_converter.set_weights(weights, model=self)
-      f, g = self._fg(x, y, sample_weight)
-      # g = self._tensor_converter._tensors_to_numpy(g)
-      # if g.shape[-1] == 1:
-      #   g = np.squeeze(g.numpy(), axis=-1)
-      # else:
-      #   g = g.numpy()
+      f, g = self._fg(x, y)
       return f.numpy(), g.numpy()
 
     x0 = self._tensor_converter.get_weights(self)
@@ -252,7 +252,8 @@ class BootstrapOptimizedModel(keras.Model):
     if result.success:
       self._tensor_converter.set_weights(result.x, self) 
     else:
-      self.stop_training = True
+      if self.optimizer.is_converged():
+        self.stop_training = True
 
     # Add function evals to the optimizer's history metrics
     # TODO: burn this, it's ugly and hacky
