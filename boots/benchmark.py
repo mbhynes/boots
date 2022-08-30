@@ -6,8 +6,8 @@ import pickle
 import numpy as np
 from tensorflow import keras
 
-from bootsgd.models import BootstrapOptimizedSequentialModel
-from bootsgd.optimizers import (
+from boots.models import BootstrapOptimizedSequentialModel
+from boots.optimizers import (
   BootstrappedDifferentiableFunction,
   BootstrappedWolfeLineSearch,
   BootstrappedFirstOrderOptimizer,
@@ -68,11 +68,13 @@ def run_tests(training_data, validation_data, num_trials=1, bootstrap_args=None,
     # "adam": {
     #   "loss": keras.losses.CategoricalCrossentropy(),
     #   "optimizer": "adam",
+    #   "metrics": ["accuracy"],
     # },
     # "rmsprop": {
     #   "compile_args": {
     #     "loss": keras.losses.CategoricalCrossentropy(),
     #     "optimizer": "rmsprop",
+    #     "metrics": ["accuracy"],
     #   },
     #   "fit_args": {},
     # },
@@ -81,16 +83,18 @@ def run_tests(training_data, validation_data, num_trials=1, bootstrap_args=None,
     #     "loss": keras.losses.CategoricalCrossentropy(reduction="none"),
     #     "optimizer": GradientDescentOptimizer(linesearch=linesearch, convergence_window=8),
     #     "bootstrap_fn": bootstrap_fn,
+    #     "metrics": ["accuracy"],
     #   },
-    #   "fit_args": {'batch_size': 2**5},
+    #   "fit_args": {'batch_size': 2**11},
     # },
     "boot-lbfgs": {
       "compile_args": {
         "loss": keras.losses.CategoricalCrossentropy(reduction="none"),
-        "optimizer": GradientDescentOptimizer(linesearch=linesearch, convergence_window=8),
+        "optimizer": LbfgsOptimizer(linesearch=linesearch, convergence_window=8),
         "bootstrap_fn": bootstrap_fn,
+        "metrics": ["accuracy"],
       },
-      "fit_args": {'batch_size': 4},
+      "fit_args": {'batch_size': 2**7},
     }
   }
   models = {key: [] for key in configs.keys()}
@@ -106,7 +110,7 @@ def run_tests(training_data, validation_data, num_trials=1, bootstrap_args=None,
         validation_data=validation_data,
         **{**fit_args, **config.get('fit_args', {})},
       )
-      if issubclass(type(config.get('optimizer')), BootstrappedFirstOrderOptimizer):
+      if issubclass(type(config.get('compile_args', {}).get('optimizer')), BootstrappedFirstOrderOptimizer):
         history[name].append((hist, model.optimizer.history))
       else:
         history[name].append((hist, []))

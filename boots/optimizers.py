@@ -1,42 +1,24 @@
-# import tensorflow as tf
-# from tensorflow import keras
+# MIT License
 #
+# Copyright (c) 2022 Michael B Hynes
 #
-# class BootstrapLineSearchOptimizer(keras.optimizers.Optimizer):
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
 #
-#   def __init__(self):
-#     super().__init__(**kwargs)
-
-# Steps:
-# - Need to customize:
-#   - optimizer
-#     - optimizer should store {pk, gk, Hk, etc} to compute new directions
-#     - initial direction is None, should be unknown until first mini-batch gradient
-#   - model.train_step 
-#     - should unpack the data and provide StochasticFunction(data) to optimizer
-#       (optimizer should really just have a StochasticFunction that iterates; but due to current way
-#       tensorflow calls the optimizer, should allow it to provide a new function context each time
-#     - This should interact with the bootstrap optimizer for the dataset
-#     - (https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/keras/engine/training.py)
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
 #
-# BootstrappedFunction
-#   - should have a method func_and_grad(params) that returns a sampled value for all N points
-#   - Have N samples, B bootstraps; this creates a sampling matrix S (B x N):
-#      f1, g1  f2,g2  f3,g3       fN,gN
-#      ================================
-#        1     2       3      ... N   
-# bs 1   s11  s12     s13         s1N
-#    2   
-#    3  
-#    ..
-#    B   sB1  sB2             ... sBN
-#
-#   - The values should be applied to the function & gradient values to compute the boostrap estimates 
-#      - E[S.dot(f)] = E[BS{f}] = 1/B * S.dot(f).sum()
-#      - std[f] = std[S.dot(f)]
-#   - The standard errors here should be used to compute whether 2 function values have sig. diffs
-
-# Goal: write for numpy first, wrapping scipy.optimize.line_search
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
 
 import enum
 import logging
@@ -60,6 +42,7 @@ class BootstrappedDifferentiableFunction:
       shuffle_on_precompute=False,
       max_samples=2**10,
       max_cache_entries=2**2,
+      bound_bootstraps_by_samples=False,
       seed=None,
   ): 
     self.num_bootstraps = num_bootstraps
@@ -67,6 +50,7 @@ class BootstrappedDifferentiableFunction:
     self.precompute = precompute
     self.shuffle_on_precompute = shuffle_on_precompute
     self.max_samples = max_samples
+    self.bound_bootstraps_by_samples = bound_bootstraps_by_samples
     self.seed = seed
     self.rng = default_rng(seed=seed)
     if self.precompute:
@@ -90,7 +74,10 @@ class BootstrappedDifferentiableFunction:
 
   def sample(self, num_samples):
     # Do not create more bootstrap samples than actual samples
-    b = np.minimum(self.num_bootstraps, num_samples)
+    if self.bound_bootstraps_by_samples:
+      b = np.minimum(self.num_bootstraps, num_samples)
+    else:
+      b = self.num_bootstraps
     if self.precompute: 
       assert self.bootstrap_sample_weights is not None
       if num_samples > self.max_samples:
@@ -463,7 +450,7 @@ class GradientDescentOptimizer(BootstrappedFirstOrderOptimizer):
 
 class LbfgsOptimizer(BootstrappedFirstOrderOptimizer):
 
-  def __init__(self, maxcorr=10, **kwargs):
+  def __init__(self, maxcorr=2**3, **kwargs):
     super().__init__(**kwargs)
     self.maxcorr = maxcorr
     self.s = []

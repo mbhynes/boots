@@ -1,10 +1,32 @@
+# MIT License
+#
+# Copyright (c) 2022 Michael B Hynes
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 import logging
 import random
 import numpy as np
 
 from kormos.utils.cache import OptimizationStateCache
 
-from bootsgd.optimizers import (
+from boots.optimizers import (
   BootstrappedDifferentiableFunction,
   BootstrappedWolfeLineSearch,
   BootstrappedFirstOrderOptimizer,
@@ -106,7 +128,7 @@ class TestBootstrappedWolfeLineSearch:
     assert np.allclose(w, poly.w_true, atol=1e-2)
 
   def test_biased_inexact_line_search(self):
-    degree = 5
+    degree = 2
     polyargs = dict(num_samples=2**10, num_bootstraps=2**10, degree=degree, noise=1, subtract_bias=True, seed=1)
     np.random.seed(1)
     w0 = np.random.normal(size=(degree + 1))

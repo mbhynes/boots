@@ -1,3 +1,25 @@
+# MIT License
+#
+# Copyright (c) 2022 Michael B Hynes
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 import logging
 from copy import deepcopy
 from types import MethodType
@@ -21,7 +43,7 @@ from keras import callbacks as callbacks_module
 
 from kormos.utils.cache import OptimizationStateCache
 
-from bootsgd.optimizers import (
+from boots.optimizers import (
   BootstrappedDifferentiableFunction,
   BootstrappedFirstOrderOptimizer,
   GradientDescentOptimizer
@@ -143,27 +165,27 @@ class BootstrapOptimizedModel(keras.Model):
     Subsequent calls to the `model.fit` will perform training using the
     standard `keras.Model.fit` method.
 
-    If the `optimizer` argument is specified as a valid `kormos.optimizers.BatchOptimizer`
-    (or a valid string identifier to create one using `kormos.optimizers.get()`), then
+    If the `optimizer` argument is specified as a valid `boots.optimizers.BatchOptimizer`
+    (or a valid string identifier to create one using `boots.optimizers.get()`), then
     the model will be configured to map calls to `fit` to the method `fit_batch`.
 
     Keyword Args:
-      optimizer: A `keras.optimizer.Optimizer` or string identifier, or a `kormos.optimizer.BatchOptimizer` or string identifier
+      optimizer: A `keras.optimizer.Optimizer` or string identifier, or a `boots.optimizer.BatchOptimizer` or string identifier
       **kwargs: all other `kwargs` as passed to `keras.Model.compile <https://keras.io/api/models/model_training_apis/#compile-method>`_
     """
-    jacobian_batch_size = kwargs.pop("jacobian_batch_size", 2**5)
+    jacobian_batch_size = kwargs.pop("jacobian_batch_size", 2**2)
     orig_run_eagerly = kwargs.pop("run_eagerly", None)
     orig_optimizer = kwargs.pop("optimizer", "rmsprop")
     bootstrap_fn = kwargs.pop("bootstrap_fn", BootstrappedDifferentiableFunction()) 
     use_bootstrap_fit = False
     try:
-        optimizer = keras.optimizers.get(orig_optimizer)
-        run_eagerly = orig_run_eagerly
-        logger.warning(f"{type(self)} compiled with optimizer={optimizer}.")
+      optimizer = keras.optimizers.get(orig_optimizer)
+      run_eagerly = orig_run_eagerly
+      logger.warning(f"{type(self)} compiled with optimizer={optimizer}.")
     except ValueError:
-        optimizer = "rmsprop"  # Set a valid default to call .compile() as a dummy
-        run_eagerly = True
-        use_bootstrap_fit = True
+      optimizer = "rmsprop"  # Set a valid default to call .compile() as a dummy
+      run_eagerly = True
+      use_bootstrap_fit = True
 
     super().compile(optimizer=optimizer, run_eagerly=run_eagerly, **kwargs)
     # If we are fitting with a deterministic batch algorithm, reset
@@ -172,7 +194,7 @@ class BootstrapOptimizedModel(keras.Model):
       optimizer = orig_optimizer
       if not issubclass(type(optimizer), BootstrappedFirstOrderOptimizer):
         raise ValueError(
-          f"optimizer={optimizer} was provided; please provide an instantiated BootstrappedFirstOrderOptimizer"
+          f"optimizer type={type(optimizer)} was provided; please provide an instantiated BootstrappedFirstOrderOptimizer"
         )
 
       loss = kwargs.pop("loss")
@@ -210,11 +232,21 @@ class BootstrapOptimizedModel(keras.Model):
       .batch(batch_size, drop_remainder=True)
     )
     # Initialize TensorArray buffers to iteratively append the loss/jacobians
-    losses_array = tf.TensorArray(dtype=keras.backend.floatx(), size=len(X) // batch_size)
-    jac_array = tf.TensorArray(dtype=keras.backend.floatx(), size=len(X) // batch_size)
+    losses_array = tf.TensorArray(
+      dtype=keras.backend.floatx(),
+      size=len(X) // batch_size,
+      element_shape=(batch_size,),
+    )
+    jac_array = tf.TensorArray(
+      dtype=keras.backend.floatx(),
+      size=len(X) // batch_size,
+      element_shape=(batch_size, self._tensor_converter.num_model_variables),
+    )
 
     for (k, record) in data.enumerate():
       x, y, _ = data_adapter.unpack_x_y_sample_weight(record)
+      # tf.print("x=", x)
+      # tf.print("y=", y)
 
       with tf.GradientTape() as tape:
         y_pred = model(x, training=True)
@@ -227,11 +259,18 @@ class BootstrapOptimizedModel(keras.Model):
       jac = tape.jacobian(losses, model.trainable_weights)
       flat_jac = tf.concat([tf.reshape(j, (x.shape[0], -1)) for j in jac], axis=-1)
 
+      # tf.print("jac=", jac)
+      # tf.print("flat_jac=", flat_jac)
+
       # Write the loss and jacobian arrays for this chunk to the buffer
       losses_array = losses_array.write(tf.cast(k, dtype=tf.int32), tf.transpose(losses))
       jac_array = jac_array.write(tf.cast(k, dtype=tf.int32), tf.squeeze(flat_jac))
 
-    return losses_array.concat(), jac_array.concat()
+    f = losses_array.concat()
+    g = jac_array.concat()
+    # tf.print("f (tf)=", f)
+    # tf.print("g (tf)=", g)
+    return f, g
 
   def bootstrap_train_step(self, data):
     nfev = 0
