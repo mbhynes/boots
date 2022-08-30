@@ -112,7 +112,8 @@ class BootstrappedDifferentiableFunction:
       bias = (v_mean_bs - v_mean)
       v_mean -= bias
       # Subtracting the bias increases the uncertainty in the value
-      # The factor of 2 is from the addition of variances in quadrature
+      # There should be a factor of 2 is from the addition of variances
+      # in quadrature ... I think lol, assuming no covariance terms...
       # v_std_bs *= np.sqrt(2)
     return (v_mean, v_std_bs, b)
 

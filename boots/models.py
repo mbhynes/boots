@@ -309,5 +309,6 @@ class BootstrapOptimizedModel(keras.Model):
         return_metrics[metric.name] = result
     return return_metrics
 
+
 class BootstrapOptimizedSequentialModel(keras.models.Sequential, BootstrapOptimizedModel):
     pass
