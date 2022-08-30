@@ -385,6 +385,13 @@ class BootstrappedFirstOrderOptimizer:
     context = {'bootstrap_fn': bootstrap_fn, 'x': x}
     self.on_iterate_begin(**context)
 
+    # TODO: the caching mechanism is F'd here, because the
+    # conversion between the tf.float32 and numpy arrays
+    # changes some of the bits, such that the hashes aren't
+    # the same (which is correct, but the fluctuating decimal 
+    # places here are <= 10^-7 so not important in reality)
+    # Not sure how to fix this right now. What's a few extra
+    # fevals between friends?
     # if len(bootstrap_fn.cache.entries):
       # logger.debug("last entry: ")
       # logger.debug(bootstrap_fn.cache.entries[-1])
