@@ -134,7 +134,7 @@ class TestBootstrappedWolfeLineSearch:
     w0 = np.random.normal(size=(degree + 1))
     w, poly = self._run_gradient_descent(w0, polyargs=polyargs, is_biased=True, iters=10)
     # Solve the system by linear least squares to get a ballpark solution tolerance
-    w_ls, _, _, _ = np.linalg.lstsq(poly.X, poly.y_true)
+    w_ls, _, _, _ = np.linalg.lstsq(poly.X, poly.y_true, rcond=None)
     atol = np.sqrt(np.linalg.norm(w_ls - poly.w_true))
     assert np.allclose(w, poly.w_true, atol=atol)
 
@@ -181,7 +181,7 @@ class TestGradientDescentOptimizer(OptimizerTest):
     opt = self.optimizer_cls(linesearch=BootstrappedWolfeLineSearch())
     result = opt.minimize(poly, w0, maxiters=20 * degree)
     # Solve the system by linear least squares to get a ballpark solution tolerance
-    w_ls, _, _, _ = np.linalg.lstsq(poly.X, poly.y_true)
+    w_ls, _, _, _ = np.linalg.lstsq(poly.X, poly.y_true, rcond=None)
     atol = np.sqrt(np.linalg.norm(w_ls - poly.w_true))
     assert np.allclose(result.x, poly.w_true, atol=atol)
 
@@ -199,7 +199,7 @@ class TestGradientDescentOptimizer(OptimizerTest):
     )
     w, poly = self._iterate(w0, polyargs, is_biased=True, iters=10)
     # Solve the system by linear least squares to get a ballpark solution tolerance
-    w_ls, _, _, _ = np.linalg.lstsq(poly.X, poly.y_true)
+    w_ls, _, _, _ = np.linalg.lstsq(poly.X, poly.y_true, rcond=None)
     atol = np.sqrt(np.linalg.norm(w_ls - poly.w_true))
     assert np.allclose(w, poly.w_true, atol=atol)
 
@@ -222,7 +222,7 @@ class TestLbfgsOptimizer(OptimizerTest):
     opt = self.optimizer_cls(linesearch=BootstrappedWolfeLineSearch())
     result = opt.minimize(poly, w0, maxiters=3*degree)
     # Solve the system by linear least squares to get a ballpark solution tolerance
-    w_ls, _, _, _ = np.linalg.lstsq(poly.X, poly.y_true)
+    w_ls, _, _, _ = np.linalg.lstsq(poly.X, poly.y_true, rcond=None)
     atol = np.sqrt(np.linalg.norm(w_ls - poly.w_true))
     assert np.allclose(result.x, poly.w_true, atol=atol)
 
@@ -239,6 +239,6 @@ class TestLbfgsOptimizer(OptimizerTest):
     )
     w, poly = self._iterate(w0, polyargs, is_biased=True, iters=3*degree)
     # Solve the system by linear least squares to get a ballpark solution tolerance
-    w_ls, _, _, _ = np.linalg.lstsq(poly.X, poly.y_true)
+    w_ls, _, _, _ = np.linalg.lstsq(poly.X, poly.y_true, rcond=None)
     atol = np.sqrt(np.linalg.norm(w_ls - poly.w_true))
     assert np.allclose(w, poly.w_true, atol=atol)

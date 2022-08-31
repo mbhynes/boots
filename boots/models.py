@@ -51,6 +51,7 @@ from boots.optimizers import (
 
 logger = logging.getLogger(__name__)
 
+
 class TensorArrayConverter:
 
   def __init__(self, dtype=tf.float64):
@@ -174,6 +175,11 @@ class BootstrapOptimizedModel(keras.Model):
       **kwargs: all other `kwargs` as passed to `keras.Model.compile <https://keras.io/api/models/model_training_apis/#compile-method>`_
     """
     jacobian_batch_size = kwargs.pop("jacobian_batch_size", 2**2)
+    # Only re-use previous values at sufficiently large batch sizes
+    reuse_previous_batch_fg = kwargs.pop(
+      "reuse_previous_batch_fg",
+      (kwargs.get('batch_size', 0) > 2**10)
+    )
     orig_run_eagerly = kwargs.pop("run_eagerly", None)
     orig_optimizer = kwargs.pop("optimizer", "rmsprop")
     bootstrap_fn = kwargs.pop("bootstrap_fn", BootstrappedDifferentiableFunction()) 
@@ -216,6 +222,7 @@ class BootstrapOptimizedModel(keras.Model):
       self.train_step = self.bootstrap_train_step
       self.optimizer = optimizer
       self._jacobian_batch_size = jacobian_batch_size
+      self._reuse_previous_batch_fg = reuse_previous_batch_fg
       self._bootstrap_fn = bootstrap_fn
       self._tensor_converter.build(self)
     else:
@@ -286,17 +293,34 @@ class BootstrapOptimizedModel(keras.Model):
 
     x0 = self._tensor_converter.get_weights(self)
     self._bootstrap_fn.func_and_grad = MethodType(_wrapped_fg, self._bootstrap_fn) 
-    # self._bootstrap_fn.cache.clear()
+
+    # In principle we should be able to re-use the last computed func/grad point
+    # from the previous batch as the starting point for the current search, 
+    # if the cache contains the np.array representation of the model's parameters. 
+    # However there's a problem here with the single -> double precision conversion,
+    # between the tensorflow tensors and the np.array values, such that the cache
+    # never returns a hit between successive iterations. Caching only works with
+    # tf.float46 precision.
+    if not self._reuse_previous_batch_fg:
+      self._bootstrap_fn.cache.clear()
+
     result = self.optimizer.iterate(self._bootstrap_fn, x0) 
     if result.success:
       self._tensor_converter.set_weights(result.x, self) 
     else:
+      self._bootstrap_fn.cache.clear()
       if self.optimizer.is_converged():
         self.stop_training = True
 
     # Add function evals to the optimizer's history metrics
     # TODO: burn this, it's ugly and hacky
-    self.optimizer.history[-1].update({'nfev': nfev})
+    self.optimizer.history[-1].update({'nfev_cached': nfev})
+
+    logger.info(
+      f" - loss: {self.optimizer.history[-1]['fun'][0]:2.4g} +/- {self.optimizer.history[-1]['fun'][1]:2.4g}"
+      f" - {self.optimizer.history[-1]['nfev']} f/g evals ({nfev} cached evals)"
+      f" - {self.optimizer.history[-1]['status'].message()}"
+    )
 
     # Collect metrics to return
     return_metrics = {}

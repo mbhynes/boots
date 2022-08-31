@@ -39,16 +39,16 @@ class BootstrappedDifferentiableFunction:
       num_bootstraps=2**10,
       subtract_bias=True,
       precompute=True,
-      shuffle_on_precompute=False,
+      shuffle_precomputed=True,
       max_samples=2**10,
       max_cache_entries=2**2,
-      bound_bootstraps_by_samples=False,
+      bound_bootstraps_by_samples=True,
       seed=None,
   ): 
     self.num_bootstraps = num_bootstraps
     self.subtract_bias = subtract_bias
     self.precompute = precompute
-    self.shuffle_on_precompute = shuffle_on_precompute
+    self.shuffle_precomputed = shuffle_precomputed
     self.max_samples = max_samples
     self.bound_bootstraps_by_samples = bound_bootstraps_by_samples
     self.seed = seed
@@ -90,10 +90,10 @@ class BootstrappedDifferentiableFunction:
         self.max_samples = num_samples
         self.bootstrap_sample_weights = S
         return S
-      if self.shuffle_on_precompute:
+      if self.shuffle_precomputed:
         self.rng.shuffle(self.bootstrap_sample_weights, axis=1)
       return self.bootstrap_sample_weights[:b, :num_samples]
-    return self._build_sampling_matrix(b, num_samples)
+    return self._build_sampling_matrix(b, num_samples, rng=self.rng)
 
 
   def _bootstrap(self, x, fn):
@@ -114,7 +114,7 @@ class BootstrappedDifferentiableFunction:
       # Subtracting the bias increases the uncertainty in the value
       # There should be a factor of 2 is from the addition of variances
       # in quadrature ... I think lol, assuming no covariance terms...
-      # v_std_bs *= np.sqrt(2)
+      v_std_bs *= np.sqrt(2)
     return (v_mean, v_std_bs, b)
 
   @OptimizationStateCache.cached(key='bootstrapped_f')
@@ -159,16 +159,29 @@ class BootstrappedWolfeLineSearch:
   DEFAULT_LINESEARCH_CONFIG = {
     'c1': 1e-4, 
     'c2': 0.9,
-    'maxiter': 20,
+    'maxiter': 10,
   }
   
-  def __init__(self, linesearch_config=None, significance_level=0.05):
+  def __init__(self, linesearch_config=None, significance_level=0.05, max_cache_entries=2**2):
     self.significance_level = significance_level
     self.linesearch_config = {**self.DEFAULT_LINESEARCH_CONFIG, **(linesearch_config or {})}
-    self.cache = OptimizationStateCache(max_entries=2**3)
+    self.cache = OptimizationStateCache(max_entries=max_cache_entries)
 
   def minimize(self, fn, p, x0):
+    """
+    Minimize the `BootstrappedDifferentiableFunction` ``fn`` along the 
+    search direction ``p``, starting from point ``x0``. This method will
+    return a sufficient local mimimum that satisfies the strong Wolfe
+    conditions, within sampling error.
 
+    The search is implemented by using the `scipy` line search 
+    ``scipy.optimize.line_search``, which is an implementation of the
+    algorithm described in Wright and Nocedal, ‘Numerical Optimization’,
+    1999, pp. 59-61.
+    We extend the `scipy` routine by supplying an ``extra_condition` callable
+    that evaluates a t-test on the sufficient decrease and curvature conditions,
+    using the standard error in these values estimated from the bootstrap sample.
+    """
     c1, c2 = self.linesearch_config['c1'], self.linesearch_config['c2']
     bsfunc = fn.bootstrap_func
     bsgrad = fn.bootstrap_grad
@@ -320,7 +333,7 @@ class OptimizerExitStatus(enum.IntEnum):
 class BootstrappedFirstOrderOptimizer:
 
   history_ls_result_keys = [
-    'fun', 'success', 'status',
+    'fun', 'success', 'status', 'nfev',
   ] 
   history_keys = [
     'g_norm', 'is_steepest_descent', 'stepsize',
@@ -406,7 +419,7 @@ class BootstrappedFirstOrderOptimizer:
       logger.warning(
         f"Sampled f={f:2.4g}+/-{df:2.4g} is different from sample in previous batch. "
         f"Previous: {self.history[-1]['fun'][0]:2.4g} +/- {self.history[-1]['fun'][1]:2.4g} "
-        "Iteration has sampling error limits. Please increase the (bootstrap) batch_size."
+        "Iteration has sampling error limits. Please increase the batch_size."
       )
     # logger.debug(f"Latest cache entry: {bootstrap_fn.cache.entries[-1]}")
     p, is_steepest_descent = self.compute_search_direction(x, f, g)
@@ -435,7 +448,6 @@ class BootstrappedFirstOrderOptimizer:
 
     self.update_history(**context)
     self.on_iterate_end(**context)
-    logger.info(self.history[-1])
     return ls_result
 
   def minimize(self, bootstrap_fn, x0, maxiters=20):
