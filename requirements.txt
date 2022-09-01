@@ -3,3 +3,5 @@ scipy
 numpy
 tensorflow>=2
 kormos
+pandas
+matplotlib

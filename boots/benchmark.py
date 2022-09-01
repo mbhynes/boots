@@ -47,8 +47,11 @@ logging.basicConfig(level=logging.INFO)
 num_classes = 10
 input_shape = (28, 28, 1)
 
-
 def build_model():
+  """
+  Create a simple convolutional neural net for MNIST digit classification.
+  This model is adapted from: https://keras.io/examples/vision/mnist_convnet/
+  """
   model = BootstrapOptimizedSequentialModel([
     keras.Input(shape=input_shape),
     keras.layers.Conv2D(16, kernel_size=(4, 4), activation="relu"),
@@ -78,8 +81,13 @@ def load_data():
   return (x_train, y_train), (x_test, y_test)
 
 def run_tests(training_data=None, validation_data=None, num_trials=1, fn_args=None, ls_args=None, fit_args=None):
+  """
+  Run a suite of simple .fit() optimization tests on the convnet model.
+  """
+
   if training_data is None:
     training_data, validation_data = load_data()
+
   fit_args = fit_args or {}
 
   bootstrap_fn = BootstrappedDifferentiableFunction(**(fn_args or {}))
@@ -94,8 +102,8 @@ def run_tests(training_data=None, validation_data=None, num_trials=1, fn_args=No
       "fit_args": {
         "steps_per_epoch": 2**7,
         "batch_size": 2**5,
-        # Run for ~3 epochs since each bootstrapped linesearch will take ~3 function evals
-        "epochs": 3 * len(training_data[0]) // (2**5 * 2**8),
+        # Run for ~3 epochs since each bootstrapped l-bfgs iter will take ~3 function evals
+        "epochs": 3 * len(training_data[0]) // (2**5 * 2**7),
       },
     },
     "boot-sgd": {
@@ -145,7 +153,7 @@ def run_tests(training_data=None, validation_data=None, num_trials=1, fn_args=No
       else:
         history[name].append((hist, []))
       models[name].append(model)
-  return models, history
+  return models, history, configs
 
 def plot_results(models, history, steps_per_epoch=1, batch_size=2**5, trialno=0):
   keys = models.keys()
@@ -186,7 +194,7 @@ def plot_results(models, history, steps_per_epoch=1, batch_size=2**5, trialno=0)
 def main(args):
   try:
     training_data, validation_data = load_data()
-    models, history = run_tests(
+    models, history, configs = run_tests(
       training_data,
       validation_data,
       ls_args={
@@ -197,7 +205,7 @@ def main(args):
         'num_bootstraps': 2**9
       },
     )
-    ax = plot_results(models, history)
+    ax = plot_results(models, history, steps_per_epoch=configs['adam']['fit_args']['steps_per_epoch'])
     plt.savefig("docs/_static/convnet_loss_trace.png")
     with open("docs/_static/convnet_history.pkl", "w") as f:
       pickle.dump(history, f)
