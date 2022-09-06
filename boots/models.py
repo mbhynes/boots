@@ -252,8 +252,6 @@ class BootstrapOptimizedModel(keras.Model):
 
     for (k, record) in data.enumerate():
       x, y, _ = data_adapter.unpack_x_y_sample_weight(record)
-      # tf.print("x=", x)
-      # tf.print("y=", y)
 
       with tf.GradientTape() as tape:
         y_pred = model(x, training=True)
@@ -266,17 +264,12 @@ class BootstrapOptimizedModel(keras.Model):
       jac = tape.jacobian(losses, model.trainable_weights)
       flat_jac = tf.concat([tf.reshape(j, (x.shape[0], -1)) for j in jac], axis=-1)
 
-      # tf.print("jac=", jac)
-      # tf.print("flat_jac=", flat_jac)
-
       # Write the loss and jacobian arrays for this chunk to the buffer
       losses_array = losses_array.write(tf.cast(k, dtype=tf.int32), tf.transpose(losses))
       jac_array = jac_array.write(tf.cast(k, dtype=tf.int32), tf.squeeze(flat_jac))
 
     f = losses_array.concat()
     g = jac_array.concat()
-    # tf.print("f (tf)=", f)
-    # tf.print("g (tf)=", g)
     return f, g
 
   def bootstrap_train_step(self, data):
