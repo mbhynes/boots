@@ -200,4 +200,4 @@ As a practical aside, note that `tensorflow` doesn't allow dynamic batch sizes d
 
 This is obviously not a rigorous study; it's just a blog post about an idea and a prototype from the weekend.
 There's only 1 example problem on one toy model on a simplistic dataset, without multiple trials (and the damn thing takes too long to run on meatier models/datasets).
-Before drawing any actual conclusions, some actual experiments would be necessary... ¯\\_(ツ)_/¯
+Before drawing any actual conclusions, some actual experiments would be necessary... ¯\\\_(ツ)\_/¯
