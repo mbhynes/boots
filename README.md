@@ -69,7 +69,7 @@ The bootstrap-sampled first order optimizer works as follows:
 
   - **Restart**: If the line search fails to determine a suitable $\alpha_{k}^{\*}$ and $p_{k} \neq -\nabla \hat{f_k}$, then reset the search vector to the steepest descent direction; set $p_{k} = -\nabla \hat{f_k}$ and recompute $\alpha_{k}^{\*}$
 
-  - Set $w_{k} = w_{k-1} + \alpha^{\*}_{k} p_k$
+  - Set $w_{k} = w_{k-1} + \alpha^{\*}_{k} p_{k}$
 
 ### Bootstrapped Line Search
 
@@ -99,7 +99,7 @@ The implementation has the following components:
   - The class overrides the default ``keras.Model.train_step()`` method and calls the ``optimizer.iterate()`` method, which performs an iteration of the optimization algorithm
   - Each call to ``iterate()`` requires a callable providing the $b$-dimensional loss function vector (that is, the loss for each of the individual $b$ samples in the mini-batch) and $(b \times N)$-dimensional matrix of stacked $N$-dimensional gradient vectors for each sample
     - This callable is wrapped in a `tensorflow.function` and provides the function/gradient through a tensorflow [``GradientTape.jacobian``](https://www.tensorflow.org/api_docs/python/tf/GradientTape#jacobian) through the private method [``_fg``](https://github.com/mbhynes/boots/blob/10774d4a88ed655cbbf8ab4c619791fad0b527f6/boots/models.py#L233)
-    - Computing the Jacobian is really slow and memory intensive---in fact to compute the Jacobian robustly on large models with the batch sizes on the order of $2^{10}$ we found it necessary to split the mini-batch into chunks of less than $2^5$ samples, accumulate the results in a [TensorArray](https://www.tensorflow.org/api_docs/python/tf/TensorArray) and then concatenate the results. As an aside, there have been discussions for years about how to compute Jacobians in tensorflow (e.g. [tensorflow#4897](https://github.com/tensorflow/tensorflow/issues/4897), [tensorflow#675](https://github.com/tensorflow/tensorflow/issues/675)), and it is known that this an atypical use case not efficiently handled by a reverse-mode autodifferentiation system.
+    - Computing the Jacobian is really slow and memory intensive---in fact to compute the Jacobian robustly on large models with the batch sizes on the order of $2^{10}$ we found it necessary to split the mini-batch into chunks of less than $2^5$ samples, accumulate the values in a [TensorArray](https://www.tensorflow.org/api_docs/python/tf/TensorArray), and then concatenate the intermediary results. As an aside, there have been discussions for years about how to compute Jacobians in tensorflow (e.g. [tensorflow#4897](https://github.com/tensorflow/tensorflow/issues/4897), [tensorflow#675](https://github.com/tensorflow/tensorflow/issues/675)), and it is known that this an atypical use case not efficiently handled by a reverse-mode autodifferentiation system.
   - Please note that during training this model performs conversions between the [``tensorflow.Tensor``](https://www.tensorflow.org/api_docs/python/tf/Tensor) (2-dimensional) representations of the model weights and their stacked (1-dimensional) [``numpy.ndarray``](https://numpy.org/doc/stable/reference/generated/numpy.ndarray.html) representation each time the function/gradient is evaluated on a mini-batch, since we've used a prebuild line search in `scipy` rather than implement one natively in `tensorflow` for a simple prototype.
 
 - [``BootstrappedFirstOrderOptimizer``](https://github.com/mbhynes/boots/blob/8adfee0ab6c4023be6e79563220710b75ac7537d/boots/optimizers.py#L333)
@@ -109,17 +109,17 @@ The implementation has the following components:
 
 - [``BootstrappedWolfeLineSearch``](https://github.com/mbhynes/boots/blob/8adfee0ab6c4023be6e79563220710b75ac7537d/boots/optimizers.py#L157)
   - This class implements a bootstrapped line search by wrapping the [``scipy.optimize.line_search``](https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.line_search.html#scipy.optimize.line_search) Strong Wolfe line search routine, using its ``extra_condition`` callable argument to run the additional t-tests on each candidate step size
-  - The line search API is provided through the ``minimize(fn, p, x0)`` method, which minimizes the function ``fn` along the vector direction ``p`` starting from the point ``x0``
+  - The line search API is provided through the ``minimize(fn, p, x0)`` method, which minimizes the function ``fn`` along the vector direction ``p`` starting from the point ``x0``
   - The ``fn`` argument must be a ``BootstrappedDifferentiableFunction``, which performs the bootstrap sampling and bias subtraction
 
 - [``BootstrappedDifferentiableFunction``](https://github.com/mbhynes/boots/blob/8adfee0ab6c4023be6e79563220710b75ac7537d/boots/optimizers.py#L36)
   - This class provides the bootstrapping routines for computing $\hat{f}$ on mini-batches of the training dataset, as well as LRU caching
   - The method ``BootstrappedDifferentiableFunction.func_and_grad()`` must be implemented by child classes and return the $B$-dimensional vector of bootstrapped loss function samples and $(B \times N)$-dimensional matrix of bootstrapped gradient samples
-  - The bootstrap sampling routine is implemented with a matrix cache; rather than draw $b$ samples with replacement from the mini-batch $B$ times (once per bootstrap), we build a $B \times b$ matrix once and persist this sample weight matrix $S$. Each time the bootstrap sampling is to be run, we shuffle the *columns* of the matrix and compute the bootstrap values using a matrix/vector product between $S$ and the per-sample vector of loss (or gradient) values; that is, the $B$-dimensional bootstrap vector $BS(\hat{f})$ is computed as:
+  - The bootstrap sampling routine is implemented with a [matrix cache](https://github.com/mbhynes/boots/blob/64441a7219976b682f94f6450f245aa0bb1401b2/boots/optimizers.py#L81); rather than draw $b$ samples with replacement from the mini-batch $B$ times (i.e. compute $b\cdot B$ random numbers), we build a $B \times b$ matrix once and persist this sample weight matrix $\mathbf{S}$. Each time the bootstrap sampling is to be run, we shuffle the *columns* of the matrix and compute the bootstrap values using a matrix/vector product between $S$ and the per-sample vector of loss (or gradient) values; that is, the $B$-dimensional bootstrap vector $BS(\hat{f})$ is computed as:
 
-    $$ BS(\hat{f}) = \frac{1}{B} S \mdot [L(x_1, y_1|w), ... , L(x_b, y_b|w) ]^T $$
+    $$ BS(\hat{f}) = \frac{1}{B} \mathbf{S} \cdot [L(x_1, y_1|w), ... , L(x_b, y_b|w) ]^T $$
 
-    The bootstrap gradient values are computed analogously with the only difference being that the matrix/vector product is a matrix/matrix product.
+    The bootstrap gradient values are computed analogously, with the only difference being that the matrix/vector product becomes a matrix/matrix product.
 
 Results
 -------
@@ -154,12 +154,12 @@ The model parameters were optimized starting from randomly drawn parameters usin
 
 We evaluated the *training* loss achieved by the optimizers as a function as the number of per-sample loss function/gradient evaluations (please note we consider this rather than *validation*/*testing* loss since we are interested primarily in the rate of decrease in the function being directly optimized).
 
-A sample trace of the optimizers is shown in the graph of training loss vs evaluations below.
+A sample trace of the optimizers is shown in the graph below of training loss vs cumulative function evaluations.
 In this plot, the shaded regions for the bootstrapped optimizers delineate the estimated *standard error* in the evaluted loss function for the mini-batch and the connected line within the regions shows the *de-biased* estimate of the loss function from the mini-batch. 
 The ADAM optimizer was evaluated using the standard `tensorflow` weighted training loss accumulation every $2^7$ steps (since the ``batch_size`` used was $2^5$, this corresponds to an evaluation every $2^{12}$ samples, which is partly why this trace appears less noisy than the others).
 ADAM was run for 3 *epochs* (i.e. 3 distinct passes through the 60,000 sample training dataset), while the other algorithms were run for 1 *epoch* each, since the bootstrapped optimizers evaluate the loss function/gradient multiple times per mini-batch during the line search.
 
-The convergence trace shows that the bootstrapped L-BFGS algorithm has a comparable (or slightly better) convergence rate to ADAM during the first epoch (60,000 evaluations) for this problem, however note that the ADAM loss trace often overlaps within the standard error estimates (and as such the traces may not be significantly different).
+The convergence trace shows that the bootstrapped L-BFGS algorithm has a comparable convergence rate to ADAM during the first epoch (60,000 evaluations) for this problem, and the ADAM loss trace often overlaps within the bootstrapped L-BFGS standard error estimates of the loss.
 
 ![Training Loss Convergence Traces](docs/_static/convnet_loss_trace.png)
 
@@ -170,33 +170,34 @@ Discussion
 
 Based on the plot above you might think that this solver is a worthy contender to crank out on other problems in the wild!
 But alas, no---or at least, probably not.
-While the convergence plot above shows the convergence by function/gradient evaluations, it omits the wall clock time for running the solvers.
+While the convergence plot above shows the convergence by function/gradient evaluations, it omits the *wall clock time* for running the solvers.
 This is an admittedly inefficient implementation of the bootstrap optimizer described above, and it takes minutes to run the bootstrap L-BFGS solver compared to *seconds* for ADAM.
 The bottleneck our runtime is the `GradientTape.jacobian` evaluation, which is just plain slow.
-It may be
+An efficient implementation of the Jacobian is a necessity for this implementation to be practical for general purpose use.
 
-However, if the implementation were optimized such that the cost of Jacobian evaluation were approximately equal to the standard gradient evaluation (and the additional bootstrapping and line search computations were negligible), then it may be that a bootstrapped L-BFGS algorithm could be competitive with stochastic solvers like ADAM and RMSProp.
-This would require the following be ported to `tensorflow` operators to make use of graph-compilation:
+However, if the implementation were optimized such that the cost of Jacobian evaluation were approximately equal to the standard gradient evaluation (and the additional bootstrapping and line search computations were negligible), then it may be that a bootstrapped L-BFGS algorithm could be competitive with stochastic solvers like ADAM and RMSProp on certain problems.
+In addition to the Jacobian implementation, this would likely require the following be ported to `tensorflow` operators to make use of efficiency of graph compilation:
 
-  - Implementation of a robust line search like ``scipy.optimize.line_search`` or the `tensorflow_probability` [``tfp.hager_zhang``](https://www.tensorflow.org/probability/api_docs/python/tfp/optimizer/linesearch/hager_zhang) routine, with modifications to perform t-tests with `tensorflow` operators
+  - A robust line search like ``scipy.optimize.line_search`` or the `tensorflow_probability` [``tfp.hager_zhang``](https://www.tensorflow.org/probability/api_docs/python/tfp/optimizer/linesearch/hager_zhang) routine, with modifications to perform t-tests with `tensorflow` operators
   - Implementation of the bootstrap sampling with replacement in `tensorflow` operators
   - L-BFGS inverse Hessian recursion calculations (with an [implementation available](https://github.com/tensorflow/probability/blob/main/tensorflow_probability/python/optimizer/lbfgs.py) in `tensorflow_probability`)
 
 ### Convergence
 
-It is not obvious that bootstrapping to de-bias the mini-batch esimates of $f(w)$ can guarantee convergence of the optimization problem $w^* = \arg\min_w f(w)$.
+It is not obvious that bootstrapping to de-bias the mini-batch esimates of $f(w)$ can guarantee convergence of the optimization problem $w^\* = \arg\min_w f(w)$ (in fact, it may be obvious to an actual statistician that bootstrapping *cannot* guarantee convergence----shoot us a message if that's the case).
 Stochastic solvers use decaying step sizes (termed *learning rates*) to ensure eventual convergence---so long as the gradients are bounded, the updates to the parameters grow smaller and smaller with each iteration such that even a poor descent direction in any given iteration cannot cause irreperable damage to the parameters.
-
 There is admittedly no such constraint here.
-Instead, we are relying on the sizes of $b$ and $B$ to be sufficiently large that it's *unlikely* that any one mini-batch could produce such poor estimates of $f(w)$ as to thwart the solver.
-To actually guarantee convergence within some $\epsilon$-radius of a local minimum, rather than impose a bound on the line search step size, we think it's necessary to *increase* the mini-batch sampling size $b$ as the bootstrap solver progresses, such that the estimates converge $\hat{f_k} \rightarrow f$ after removing the sampling bias.
-This would have the effect of converting the stochastic problem into a deterministic problem in the limit that $b \rightarrow n$, and the downside of marginally decreasing gains since a higher accuracy solution would come at an increasing computational cost.
-However in practice it's common to have sufficient noise and measurement error in the datasets used for parameter inference such that high accuracy solutions are *rarely* needed; we think it's likely that a simple strategy that doubles $b$ starting whenever the rate of decrease in the sequence $\{\hat{f}_k\}$ drops below a threshold would be a suitable heuristic.
+Instead, we are relying on the sizes of $b$ and $B$ to be sufficiently large that it's *unlikely* that any one mini-batch could produce such poor estimates of $f(w)$ as to thwart the solver over enough iterations.
 
-As a practical note, tensorflow doesn't allow dynamic batch sizes during training, however; to implement this, it would be necessary to wrap several ``keras.Model.fit()`` calls within a single ``BootstrapOptimizedModel.fit()`` call, each with increasing $b$ when the previous solver has detected that a larger mini-batch size is necessary to decrease the loss function, within the desired error bound (or within the estimated standard error if it exceeds that bound)
+To actually guarantee convergence within some $\epsilon$-radius of a local minimum, rather than impose a bound on the line search step size, we think it's necessary to *increase* the mini-batch sampling size $b$ as the bootstrap solver progresses, such that the estimates converge $\hat{f_k} \rightarrow f$ after removing the sampling bias.
+This would have the effect of converting the stochastic problem into a deterministic problem in the limit that $b \rightarrow n$.
+It also has the downside of *marginally decreasing gains* since a higher accuracy solution would come at increasing computational cost per iteration.
+However in practice it's common to have sufficient noise and measurement error in the datasets used for parameter inference such that high accuracy solutions are *rarely* needed; we think it's likely that a simple strategy that doubles $b$ starting whenever the rate of decrease in the sequence $\{\hat{f_{k}}\}$ drops below a threshold would be a suitable heuristic.
+
+As a practical aside, note that `tensorflow` doesn't allow dynamic batch sizes during training. To implement an increasing batch size schedule, it would be necessary to wrap several ``keras.Model.fit()`` calls within a single ``BootstrapOptimizedModel.fit()`` call, each with increasing $b$ when the previous solver has detected that a larger mini-batch size is necessary to decrease the loss function, within the desired error bound (or within the estimated standard error if it exceeds that bound).
 
 ### Applicability to Other Problems
 
-This is obviously not a rigorous study; it's just a blog post about an idea and some prototyped code from the weekend.
+This is obviously not a rigorous study; it's just a blog post about an idea and a prototype from the weekend.
 There's only 1 example problem on one toy model on a simplistic dataset, without multiple trials (and the damn thing takes too long to run on meatier models/datasets).
-Before drawing any actual conclusions, some actual experiments are necessary ¯\_(ツ)_/¯
+Before drawing any actual conclusions, some actual experiments would be necessary... ¯\\_(ツ)_/¯
