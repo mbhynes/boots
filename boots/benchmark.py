@@ -93,22 +93,22 @@ def run_tests(training_data=None, validation_data=None, num_trials=1, fn_args=No
   bootstrap_fn = BootstrappedDifferentiableFunction(**(fn_args or {}))
   linesearch = BootstrappedWolfeLineSearch(**(ls_args or {}))
   configs = {
-    "adam": {
-      "compile_args": {
-        "loss": keras.losses.CategoricalCrossentropy(),
-        "optimizer": "adam",
-        "metrics": ["accuracy"],
-      },
-      "fit_args": {
-        "steps_per_epoch": 2**7,
-        "batch_size": 2**5,
-        # Run for ~3 epochs since each bootstrapped l-bfgs iter will take ~3 function evals
-        "epochs": 3 * len(training_data[0]) // (2**5 * 2**7),
-      },
-    },
+    # "adam": {
+    #   "compile_args": {
+    #     "loss": keras.losses.CategoricalCrossentropy(),
+    #     "optimizer": "adam",
+    #     "metrics": ["accuracy"],
+    #   },
+    #   "fit_args": {
+    #     "steps_per_epoch": 2**7,
+    #     "batch_size": 2**5,
+    #     # Run for ~3 epochs since each bootstrapped l-bfgs iter will take ~3 function evals
+    #     "epochs": 3 * len(training_data[0]) // (2**5 * 2**7),
+    #   },
+    # },
     "boot-sgd": {
       "compile_args": {
-        "loss": keras.losses.CategoricalCrossentropy(reduction="none"),
+        "loss": keras.losses.CategoricalCrossentropy(),
         "optimizer": GradientDescentOptimizer(linesearch=linesearch, convergence_window=8),
         "bootstrap_fn": bootstrap_fn,
         "metrics": ["accuracy"],
@@ -122,7 +122,7 @@ def run_tests(training_data=None, validation_data=None, num_trials=1, fn_args=No
     },
     "boot-lbfgs": {
       "compile_args": {
-        "loss": keras.losses.CategoricalCrossentropy(reduction="none"),
+        "loss": keras.losses.CategoricalCrossentropy(),
         "optimizer": LbfgsOptimizer(linesearch=linesearch, convergence_window=8),
         "bootstrap_fn": bootstrap_fn,
         "metrics": ["accuracy"],
@@ -191,7 +191,7 @@ def plot_results(models, history, steps_per_epoch=1, batch_size=2**5, trialno=0)
   return ax
 
 
-def main(args):
+def main(args=sys.argv):
   try:
     training_data, validation_data = load_data()
     models, history, configs = run_tests(
@@ -209,8 +209,9 @@ def main(args):
     plt.savefig("docs/_static/convnet_loss_trace.png")
     with open("docs/_static/convnet_history.pkl", "w") as f:
       pickle.dump(history, f)
-    return 0
-  except Exception:
+    return models, history, configs
+  except Exception as e:
+    logging.error(e)
     return 1
 
 

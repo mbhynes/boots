@@ -208,16 +208,16 @@ class BootstrapOptimizedModel(keras.Model):
         raise ValueError(
           f"loss=None was provided with a bootstrap optimizer: {orig_optimizer}"
         )
-      if type(loss) is str:
-        raise ValueError(
-          f"String value for loss='{loss}' is not allowed. "
-          "Please provided an instantiated loss function with reduction=keras.losses.Reduction.NONE"
-        )
-      if loss.reduction != keras.losses.Reduction.NONE:
-        raise ValueError(
-          f"Loss function {loss} has reduction {loss.reduction}. "
-          "Please specify reduction=keras.losses.Reduction.NONE"
-        )
+      # if type(loss) is str:
+      #   raise ValueError(
+      #     f"String value for loss='{loss}' is not allowed. "
+      #     "Please provided an instantiated loss function with reduction=keras.losses.Reduction.NONE"
+      #   )
+      # if loss.reduction != keras.losses.Reduction.NONE:
+      #   raise ValueError(
+      #     f"Loss function {loss} has reduction {loss.reduction}. "
+      #     "Please specify reduction=keras.losses.Reduction.NONE"
+      #   )
 
       self.train_step = self.bootstrap_train_step
       self.optimizer = optimizer
@@ -232,7 +232,29 @@ class BootstrapOptimizedModel(keras.Model):
   @tf.function
   def _fg(self, X, Y):
     model = self
-    batch_size = self._jacobian_batch_size
+    converter = model._tensor_converter
+    def _vec_fg(args):
+      (x, y) = args
+      x = tf.expand_dims(x, 0)
+      y = tf.expand_dims(y, 0)
+      with tf.GradientTape() as tape:
+        y_pred = model(x, training=True)
+        loss = tf.cast(model.compiled_loss(y, y_pred), dtype=converter.dtype)
+        if len(model.losses):
+          reg_loss = math_ops.add_n(losses_utils.cast_losses_to_common_dtype(model.losses))
+          loss += tf.cast(reg_loss, dtype=loss.dtype)
+
+      jac = tape.gradient(loss, model.trainable_weights)
+      if type(jac) is list:
+        jac = converter._flatten_tensors(jac)
+      return loss, jac
+    f, g = tf.vectorized_map(_vec_fg, (X, Y), fallback_to_while_loop=False)
+    tf.print(f"f={f}")
+    tf.print(f"g={g}")
+    return tf.squeeze(f), tf.squeeze(tf.concat(g, axis=0))
+
+
+    batch_size = 1
     # Chunk up the dataset into smaller subbatches since tape.jacobian blows up
     data = (
       tf.data.Dataset.from_tensor_slices(tensors=(X, Y))
@@ -240,12 +262,12 @@ class BootstrapOptimizedModel(keras.Model):
     )
     # Initialize TensorArray buffers to iteratively append the loss/jacobians
     losses_array = tf.TensorArray(
-      dtype=keras.backend.floatx(),
+      dtype=converter.dtype,
       size=len(X) // batch_size,
       element_shape=(batch_size,),
     )
     jac_array = tf.TensorArray(
-      dtype=keras.backend.floatx(),
+      dtype=converter.dtype,
       size=len(X) // batch_size,
       element_shape=(batch_size, self._tensor_converter.num_model_variables),
     )
@@ -255,18 +277,18 @@ class BootstrapOptimizedModel(keras.Model):
 
       with tf.GradientTape() as tape:
         y_pred = model(x, training=True)
-        losses = model.compiled_loss(y, y_pred)
+        losses = tf.cast(model.compiled_loss(y, y_pred), dtype=converter.dtype)
 
         if len(model.losses):
           reg_loss = math_ops.add_n(losses_utils.cast_losses_to_common_dtype(model.losses))
           losses += tf.cast(reg_loss, dtype=losses.dtype)
 
-      jac = tape.jacobian(losses, model.trainable_weights)
-      flat_jac = tf.concat([tf.reshape(j, (x.shape[0], -1)) for j in jac], axis=-1)
+      jac = tape.gradient(losses, model.trainable_weights)
+      flat_jac = self._tensor_converter._flatten_tensors(jac)
 
       # Write the loss and jacobian arrays for this chunk to the buffer
       losses_array = losses_array.write(tf.cast(k, dtype=tf.int32), tf.transpose(losses))
-      jac_array = jac_array.write(tf.cast(k, dtype=tf.int32), tf.squeeze(flat_jac))
+      jac_array = jac_array.write(tf.cast(k, dtype=tf.int32), tf.expand_dims(flat_jac, axis=0))
 
     f = losses_array.concat()
     g = jac_array.concat()
