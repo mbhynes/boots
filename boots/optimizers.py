@@ -339,7 +339,7 @@ class BootstrappedFirstOrderOptimizer:
     'g_norm', 'is_steepest_descent', 'stepsize', 'diff_test',
   ]
   
-  def __init__(self, linesearch=None, convergence_window=1, max_errors_in_window=1, init_max_step=10.):
+  def __init__(self, linesearch=None, convergence_window=1, max_errors_in_window=1, init_max_step=2.):
     self.linesearch = linesearch or BootstrappedWolfeLineSearch()
     self.convergence_window = convergence_window
     self.max_errors_in_window = max_errors_in_window
