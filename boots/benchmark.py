@@ -94,17 +94,20 @@ def run_tests(training_data=None, validation_data=None, num_trials=1, fn_args=No
   bootstrap_fn = BootstrappedDifferentiableFunction(**(fn_args or {}))
   linesearch = BootstrappedWolfeLineSearch(**(ls_args or {}))
   configs = {
-    "adam": {
+    "boot-lbfgs": {
       "compile_args": {
-        "loss": keras.losses.CategoricalCrossentropy(),
-        "optimizer": "adam",
+        "loss": keras.losses.CategoricalCrossentropy(reduction="none"),
+        "optimizer": LbfgsOptimizer(linesearch=linesearch, convergence_window=6, max_errors_in_window=2),
+        "bootstrap_fn": bootstrap_fn,
         "metrics": ["accuracy"],
+        "jacobian_batch_size": 2,
+        "reuse_previous_batch_fg": False,
+        'max_batch_size': 2**12,
       },
       "fit_args": {
-        "steps_per_epoch": 2**7,
-        "batch_size": 2**5,
-        # Run for ~3 epochs since each bootstrapped l-bfgs iter will take ~3 function evals
-        "epochs": 3 * len(training_data[0]) // (2**5 * 2**7),
+        'batch_size': 2**6,
+        'epochs': 1,
+        'shuffle': True,
       },
     },
     "boot-sgd": {
@@ -121,22 +124,19 @@ def run_tests(training_data=None, validation_data=None, num_trials=1, fn_args=No
         'epochs': 1,
       },
     },
-    "boot-lbfgs": {
+    "adam": {
       "compile_args": {
-        "loss": keras.losses.CategoricalCrossentropy(reduction="none"),
-        "optimizer": LbfgsOptimizer(linesearch=linesearch, convergence_window=6, max_errors_in_window=2),
-        "bootstrap_fn": bootstrap_fn,
+        "loss": keras.losses.CategoricalCrossentropy(),
+        "optimizer": "adam",
         "metrics": ["accuracy"],
-        "jacobian_batch_size": 2,
-        "reuse_previous_batch_fg": False,
-        'max_batch_size': 2**12,
       },
       "fit_args": {
-        'batch_size': 2**6,
-        'epochs': 1,
-        'shuffle': True,
+        "steps_per_epoch": 2**7,
+        "batch_size": 2**5,
+        # Run for ~3 epochs since each bootstrapped l-bfgs iter will take ~3 function evals
+        "epochs": 3 * len(training_data[0]) // (2**5 * 2**7),
       },
-    }
+    },
   }
   models = {key: [] for key in configs.keys()}
   history = {key: [] for key in configs.keys()}
