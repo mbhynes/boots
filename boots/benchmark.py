@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+import tensorflow as tf
 from tensorflow import keras
 keras.backend.set_floatx("float64")
 
@@ -93,17 +94,20 @@ def run_tests(training_data=None, validation_data=None, num_trials=1, fn_args=No
   bootstrap_fn = BootstrappedDifferentiableFunction(**(fn_args or {}))
   linesearch = BootstrappedWolfeLineSearch(**(ls_args or {}))
   configs = {
-    "adam": {
+    "boot-lbfgs": {
       "compile_args": {
-        "loss": keras.losses.CategoricalCrossentropy(),
-        "optimizer": "adam",
+        "loss": keras.losses.CategoricalCrossentropy(reduction="none"),
+        "optimizer": LbfgsOptimizer(linesearch=linesearch, convergence_window=6, max_errors_in_window=1),
+        "bootstrap_fn": bootstrap_fn,
         "metrics": ["accuracy"],
+        "jacobian_batch_size": 2,
+        "reuse_previous_batch_fg": False,
+        'max_batch_size': 2**12,
       },
       "fit_args": {
-        "steps_per_epoch": 2**7,
-        "batch_size": 2**5,
-        # Run for ~3 epochs since each bootstrapped l-bfgs iter will take ~3 function evals
-        "epochs": 3 * len(training_data[0]) // (2**5 * 2**7),
+        'batch_size': 2**6,
+        'epochs': 1,
+        'shuffle': True,
       },
     },
     "boot-sgd": {
@@ -120,26 +124,27 @@ def run_tests(training_data=None, validation_data=None, num_trials=1, fn_args=No
         'epochs': 1,
       },
     },
-    "boot-lbfgs": {
+    "adam": {
       "compile_args": {
-        "loss": keras.losses.CategoricalCrossentropy(reduction="none"),
-        "optimizer": LbfgsOptimizer(linesearch=linesearch, convergence_window=8),
-        "bootstrap_fn": bootstrap_fn,
+        "loss": keras.losses.CategoricalCrossentropy(),
+        "optimizer": "adam",
         "metrics": ["accuracy"],
-        "jacobian_batch_size": 2,
-        "reuse_previous_batch_fg": False,
       },
       "fit_args": {
-        'batch_size': 2**8,
-        'epochs': 1,
+        "steps_per_epoch": 2**7,
+        "batch_size": 2**5,
+        # Run for ~3 epochs since each bootstrapped l-bfgs iter will take ~3 function evals
+        "epochs": 3 * len(training_data[0]) // (2**5 * 2**7),
       },
-    }
+    },
   }
   models = {key: [] for key in configs.keys()}
   history = {key: [] for key in configs.keys()}
 
   for (name, config) in configs.items():
     for k in range(num_trials):
+      np.random.seed(k)
+      tf.random.set_seed(k)
       model = build_model()
       model.compile(**config["compile_args"])
       hist = model.fit(
@@ -149,9 +154,10 @@ def run_tests(training_data=None, validation_data=None, num_trials=1, fn_args=No
         **{**fit_args, **config.get("fit_args", {})},
       )
       if issubclass(type(config.get("compile_args", {}).get("optimizer")), BootstrappedFirstOrderOptimizer):
+        # Use hist, not hist.history
         history[name].append((hist, model.optimizer.history))
       else:
-        history[name].append((hist, []))
+        history[name].append((hist.history, []))
       models[name].append(model)
   return models, history, configs
 
@@ -179,7 +185,7 @@ def plot_results(models, history, steps_per_epoch=1, batch_size=2**5, trialno=0)
         color=p[0].get_color(),
       )
     else:
-      df = pd.DataFrame(hist[0].history)
+      df = pd.DataFrame(hist[0])
       df['f'] = df['loss']
       df['n'] = steps_per_epoch * batch_size
       df['n_cum'] = df['n'].cumsum()
@@ -191,28 +197,24 @@ def plot_results(models, history, steps_per_epoch=1, batch_size=2**5, trialno=0)
   return ax
 
 
-def main(args):
-  try:
-    training_data, validation_data = load_data()
-    models, history, configs = run_tests(
-      training_data,
-      validation_data,
-      ls_args={
-        'linesearch_config': {'maxiter': 5},
-        'significance_level': 0.25,
-      },
-      fn_args={
-        'num_bootstraps': 2**9
-      },
-    )
-    ax = plot_results(models, history, steps_per_epoch=configs['adam']['fit_args']['steps_per_epoch'])
-    plt.savefig("docs/_static/convnet_loss_trace.png")
-    with open("docs/_static/convnet_history.pkl", "w") as f:
-      pickle.dump(history, f)
-    return 0
-  except Exception:
-    return 1
-
+def main(args=sys.argv):
+  training_data, validation_data = load_data()
+  models, history, configs = run_tests(
+    training_data,
+    validation_data,
+    ls_args={
+      'linesearch_config': {'maxiter': 4},
+      'significance_level': 0.25,
+    },
+    fn_args={
+      'num_bootstraps': 2**12, # This will be clipped by the # of samples
+    },
+  )
+  ax = plot_results(models, history, steps_per_epoch=configs['adam']['fit_args']['steps_per_epoch'])
+  plt.savefig("docs/_static/convnet_loss_trace.png")
+  with open("docs/_static/convnet_history.pkl", "w") as f:
+    pickle.dump(history, f)
+  return 0
 
 if __name__ == "__main__":
   sys.exit(main(args=sys.argv[1:]))

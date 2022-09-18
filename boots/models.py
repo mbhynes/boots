@@ -156,6 +156,24 @@ class BootstrapOptimizedModel(keras.Model):
     self._tensor_converter = TensorArrayConverter()
     self._history = []
 
+  def fit_with_increasing_batchsize(self, **kwargs):
+    batch_size = kwargs.pop('batch_size', 2**5)
+    self._stop_training_due_to_sampling_variance = False
+    history = []
+    opt_history = []
+    while batch_size <= self._max_batch_size:
+      hist = super().fit(batch_size=batch_size, **kwargs)
+      if self.stop_training and self._stop_training_due_to_sampling_variance:
+        batch_size *= 2
+        logging.info(f"Optimizer halted due to sampling variance limit reached; doubling batch_size to {batch_size}")
+      else:
+        batch_size = 2 * self._max_batch_size
+      history += hist.history
+      opt_history += self.optimizer.history
+      self.optimizer.history = []
+    self.optimizer.history = opt_history
+    return history
+
   def compile(self, **kwargs):
     """
     Configure the model for training.
@@ -175,6 +193,7 @@ class BootstrapOptimizedModel(keras.Model):
       **kwargs: all other `kwargs` as passed to `keras.Model.compile <https://keras.io/api/models/model_training_apis/#compile-method>`_
     """
     jacobian_batch_size = kwargs.pop("jacobian_batch_size", 2**2)
+    max_batch_size = kwargs.pop("max_batch_size", None)
     # Only re-use previous values at sufficiently large batch sizes
     reuse_previous_batch_fg = kwargs.pop(
       "reuse_previous_batch_fg",
@@ -219,8 +238,12 @@ class BootstrapOptimizedModel(keras.Model):
           "Please specify reduction=keras.losses.Reduction.NONE"
         )
 
-      self.train_step = self.bootstrap_train_step
       self.optimizer = optimizer
+      self.train_step = self.bootstrap_train_step
+      if max_batch_size is not None:
+        self.fit = self.fit_with_increasing_batchsize
+
+      self._max_batch_size = max_batch_size
       self._jacobian_batch_size = jacobian_batch_size
       self._reuse_previous_batch_fg = reuse_previous_batch_fg
       self._bootstrap_fn = bootstrap_fn
@@ -228,6 +251,7 @@ class BootstrapOptimizedModel(keras.Model):
     else:
       # If this model is being re-compiled, reset the fit method to the parent
       self.train_step = super().train_step
+      self.fit = super().fit
 
   @tf.function
   def _fg(self, X, Y):
@@ -302,8 +326,12 @@ class BootstrapOptimizedModel(keras.Model):
       self._tensor_converter.set_weights(result.x, self) 
     else:
       self._bootstrap_fn.cache.clear()
-      if self.optimizer.is_converged():
-        self.stop_training = True
+
+    if self.optimizer.is_converged():
+      self._bootstrap_fn.cache.clear()
+      logger.info("CONVERGED (within variance)\n\n")
+      self.stop_training = True
+      self._stop_training_due_to_sampling_variance = True
 
     # Add function evals to the optimizer's history metrics
     # TODO: burn this, it's ugly and hacky
@@ -324,6 +352,7 @@ class BootstrapOptimizedModel(keras.Model):
         return_metrics.update(result)
       else:
         return_metrics[metric.name] = result
+
     return return_metrics
 
 

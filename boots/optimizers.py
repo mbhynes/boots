@@ -167,7 +167,7 @@ class BootstrappedWolfeLineSearch:
     self.linesearch_config = {**self.DEFAULT_LINESEARCH_CONFIG, **(linesearch_config or {})}
     self.cache = OptimizationStateCache(max_entries=max_cache_entries)
 
-  def minimize(self, fn, p, x0):
+  def minimize(self, fn, p, x0, **kwargs):
     """
     Minimize the `BootstrappedDifferentiableFunction` ``fn`` along the 
     search direction ``p``, starting from point ``x0``. This method will
@@ -298,7 +298,7 @@ class BootstrappedWolfeLineSearch:
       xk=x0,
       pk=p,
       extra_condition=_wolfe_conditional_ttest,
-      **self.linesearch_config
+      **{**self.linesearch_config, **kwargs}
     )
     success, status, msg = _determine_exit_status(alpha)
     x = x0 + alpha * p if success else x0
@@ -336,14 +336,16 @@ class BootstrappedFirstOrderOptimizer:
     'fun', 'success', 'status', 'nfev',
   ] 
   history_keys = [
-    'g_norm', 'is_steepest_descent', 'stepsize',
+    'g_norm', 'is_steepest_descent', 'stepsize', 'diff_test',
   ]
   
-  def __init__(self, linesearch=None, convergence_window=1, convergence_frac=1.0):
+  def __init__(self, linesearch=None, convergence_window=1, max_errors_in_window=1, init_max_step=2.):
     self.linesearch = linesearch or BootstrappedWolfeLineSearch()
     self.convergence_window = convergence_window
-    self.convergence_frac = convergence_frac
+    self.max_errors_in_window = max_errors_in_window
     self.history = []
+    self.k = 1
+    self.init_max_step = init_max_step
 
   def update_history(self, **context):
     entry = {
@@ -362,9 +364,9 @@ class BootstrappedFirstOrderOptimizer:
     if w == 0:
       return False
     n_failed = 0
-    for e in self.history[-self.convergence_window:]:
-      n_failed += int(not e['success'])
-    return (1.0 * n_failed / w) >= self.convergence_frac
+    for e in self.history[-w:]:
+      n_failed += int(not e['success'] or not e['diff_test'])
+    return n_failed >= self.max_errors_in_window
     
   def compute_search_direction(self, x, f, g):
     raise NotImplementedError
@@ -378,12 +380,12 @@ class BootstrappedFirstOrderOptimizer:
   def on_iterate_end(self, **context):
     pass
 
-  def is_sample_within_previous_estimate(self, f, df, index=-1):
+  def is_sample_within_previous_estimate(self, f, df, index=-1, ndevs=1):
     if len(self.history) == 0:
       return True
     previous = self.history[index]['fun']
-    v1 = (previous[0] - previous[1], previous[0] + previous[1])
-    v2 = (f - df, f + df)
+    v1 = (previous[0] - ndevs*previous[1], previous[0] + ndevs*previous[1])
+    v2 = (f - ndevs*df, f + ndevs*df)
     has_overlap = (
       (v2[0] <= v1[1]) and (v2[1] >= v1[0])
       or
@@ -414,16 +416,17 @@ class BootstrappedFirstOrderOptimizer:
     f, df, nf = bootstrap_fn.bootstrap_func(x)
     g, dg, ng = bootstrap_fn.bootstrap_grad(x)
 
-    diff_test = self.is_sample_within_previous_estimate(f, df)
+    diff_test = self.is_sample_within_previous_estimate(f, df, ndevs=1)
     if not diff_test:
       logger.warning(
-        f"Sampled f={f:2.4g}+/-{df:2.4g} is different from sample in previous batch. "
-        f"Previous: {self.history[-1]['fun'][0]:2.4g} +/- {self.history[-1]['fun'][1]:2.4g} "
-        "Iteration has sampling error limits. Please increase the batch_size."
+        f"Sampled f={f:2.4g}+/-{df:2.4g} is different from sample in previous batch by >1-sigma. "
+        f"Previous: {self.history[-1]['fun'][0]:2.4g} +/- {self.history[-1]['fun'][1]:2.4g}. "
+        "Iteration has likely hit sampling error limits. Please increase the batch_size."
       )
     # logger.debug(f"Latest cache entry: {bootstrap_fn.cache.entries[-1]}")
     p, is_steepest_descent = self.compute_search_direction(x, f, g)
-    ls_result = self.linesearch.minimize(bootstrap_fn, p=p, x0=x)
+    max_step = self.init_max_step / np.sqrt(self.k)
+    ls_result = self.linesearch.minimize(bootstrap_fn, p=p, x0=x, amax=max_step)
     context.update({
       'f': f,
       'df': df,
@@ -435,12 +438,13 @@ class BootstrappedFirstOrderOptimizer:
       'p': p,
       'ls_result': ls_result,
       'is_steepest_descent': is_steepest_descent,
+      'diff_test': diff_test,
     })
 
     if self.should_restart(**context):
       logger.warning(f"{type(self)} triggered a restart.")
       p = -g
-      ls_result = self.linesearch.minimize(bootstrap_fn, p=p, x0=x)
+      ls_result = self.linesearch.minimize(bootstrap_fn, p=p, x0=x, amax=max_step)
       context.update({'ls_result': ls_result, 'p': p, 'is_steepest_descent': True})
 
     # Compute the final stepsize as the norm of the difference betwen successive iterations
@@ -448,6 +452,7 @@ class BootstrappedFirstOrderOptimizer:
 
     self.update_history(**context)
     self.on_iterate_end(**context)
+    self.k += 1
     return ls_result
 
   def minimize(self, bootstrap_fn, x0, maxiters=20):
