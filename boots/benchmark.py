@@ -107,20 +107,20 @@ def run_tests(training_data=None, validation_data=None, num_trials=1, fn_args=No
         "epochs": 3 * len(training_data[0]) // (2**5 * 2**7),
       },
     },
-    # "boot-sgd": {
-    #   "compile_args": {
-    #     "loss": keras.losses.CategoricalCrossentropy(reduction="none"),
-    #     "optimizer": GradientDescentOptimizer(linesearch=linesearch, convergence_window=8),
-    #     "bootstrap_fn": bootstrap_fn,
-    #     "metrics": ["accuracy"],
-    #     "jacobian_batch_size": 2,
-    #     "reuse_previous_batch_fg": False,
-    #   },
-    #   "fit_args": {
-    #     'batch_size': 2**8,
-    #     'epochs': 1,
-    #   },
-    # },
+    "boot-sgd": {
+      "compile_args": {
+        "loss": keras.losses.CategoricalCrossentropy(reduction="none"),
+        "optimizer": GradientDescentOptimizer(linesearch=linesearch, convergence_window=8),
+        "bootstrap_fn": bootstrap_fn,
+        "metrics": ["accuracy"],
+        "jacobian_batch_size": 2,
+        "reuse_previous_batch_fg": False,
+      },
+      "fit_args": {
+        'batch_size': 2**8,
+        'epochs': 1,
+      },
+    },
     "boot-lbfgs": {
       "compile_args": {
         "loss": keras.losses.CategoricalCrossentropy(reduction="none"),
