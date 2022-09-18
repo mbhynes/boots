@@ -97,7 +97,7 @@ def run_tests(training_data=None, validation_data=None, num_trials=1, fn_args=No
     "boot-lbfgs": {
       "compile_args": {
         "loss": keras.losses.CategoricalCrossentropy(reduction="none"),
-        "optimizer": LbfgsOptimizer(linesearch=linesearch, convergence_window=6, max_errors_in_window=2),
+        "optimizer": LbfgsOptimizer(linesearch=linesearch, convergence_window=6, max_errors_in_window=1),
         "bootstrap_fn": bootstrap_fn,
         "metrics": ["accuracy"],
         "jacobian_batch_size": 2,
